@@ -1,0 +1,993 @@
+!!! Wiki - Visualiseur d'Ontologies OWL/RDFS avec D3.js
+
+
+!! Introduction
+
+Ce wiki explique de A à Z comment j'ai construit un '''visualiseur interactif d'ontologies''' en PHP 8 (MVC) avec D3.js. L'objectif est de charger des fichiers OWL ou RDFS, d'extraire les classes et propriétés, puis de les afficher sous forme de graphes interactifs (arbre dépliable, arbre radial, cercles imbriqués, force-directed).
+
+J'ai travaillé avec '''4 fichiers ontologiques''' de domaines complètement différents pour prouver que mon parser est générique :
+* '''AfricanWildlifeOntology1.owl''' : faune africaine (30 classes, 5 propriétés) — format RDF/XML
+* '''bckmJSON.owl''' : cancer du sein (628 classes, 46 propriétés) — format JSON-LD
+* '''human_2007_09_11.rdfs''' : relations familiales (8 classes, 14 propriétés) — format RDFS
+* '''test_simple.owl''' : ontologie simple en français (10 classes, 7 propriétés) — format RDF/XML
+
+Le projet répond aux '''5 fonctionnalités demandées''' :
+# Visualiser l'héritage à partir d'un concept C
+# Visualiser les propriétés du concept C
+# Visualiser la hiérarchie d'une propriété
+# Combiner héritage + propriétés + chaîne P sur profondeur p
+# Passer d'une vue à l'autre sans perdre l'état
+
+
+!! Table des matières
+
+# Comprendre les ontologies (OWL, RDFS, RDF)
+# Analyse des 4 fichiers ontologiques
+# Choix d'architecture (pourquoi MVC, EasyRDF, D3.js)
+# Structure du projet
+# Installation et lancement
+# Le backend : OntologyParser (le coeur du projet)
+# Les modèles : ConceptModel, PropertyModel, GraphDataModel
+# Les contrôleurs et l'API JSON
+# Le frontend : les vues PHP
+# Les 4 visualisations D3.js
+# La gestion de l'état (StateManager)
+# La gestion des couleurs (ColorManager)
+# Le contrôleur JavaScript principal (app.js)
+# Les 5 fonctionnalités obligatoires en détail
+# Comment tout fonctionne ensemble (flux complet)
+# Conclusion
+
+
+!! 1. Comprendre les ontologies (OWL, RDFS, RDF)
+
+! Qu'est-ce qu'une ontologie ?
+
+Une ontologie c'est une manière de décrire un domaine de connaissance de façon structurée. On définit des '''classes''' (les concepts), des '''propriétés''' (les relations entre concepts) et des '''hiérarchies''' (qui hérite de quoi).
+
+'''Exemple concret :'''%%%
+Dans l'ontologie test_simple.owl, on a la classe '''Être'''. La classe '''Animal''' est une sous-classe de Être (rdfs:subClassOf). Et la propriété '''mange''' relie un Animal à ce qu'il mange (un Être).
+
+! Les formats que j'ai rencontrés
+
+'''RDF/XML :''' c'est du XML classique avec des balises RDF. C'est le format le plus courant pour les fichiers .owl et .rdfs. Les deux fichiers AfricanWildlife et human utilisent ce format.
+
+'''JSON-LD :''' c'est du JSON avec des annotations sémantiques (@id, @type). Le fichier bckmJSON.owl utilise ce format. Quand on ouvre le fichier et qu'on voit des crochets [ au début, c'est du JSON-LD.
+
+! Les concepts clés à connaître
+
+'''owl:Class''' : définit une classe dans OWL. C'est ce qu'utilisent test_simple, AfricanWildlife et bckmJSON.%%%
+'''rdfs:Class''' : définit une classe dans RDFS. C'est ce qu'utilise le fichier human.%%%
+'''rdfs:subClassOf''' : dit qu'une classe hérite d'une autre. Commun à tous les fichiers. Exemple : dans test_simple.owl, Chien est une sous-classe de Mammifère.%%%
+'''owl:ObjectProperty''' : une propriété qui relie deux classes (ex: mange dans test_simple.owl).%%%
+'''owl:DatatypeProperty''' : une propriété qui relie une classe à un type de donnée (ex: âge → integer dans test_simple.owl).%%%
+'''rdf:Property''' : une propriété en RDFS, plus simple qu'OWL. C'est ce qu'utilise human.%%%
+'''rdfs:subPropertyOf''' : hiérarchie de propriétés (ex: hasFather est un sous-type de hasParent dans human).%%%
+'''owl:Restriction''' : une contrainte sur une propriété (ex: un lion mange seulement des herbivores dans AfricanWildlife).%%%
+'''owl:inverseOf''' : deux propriétés inverses (ex: mange et estMangePar dans test_simple.owl).%%%
+'''owl:TransitiveProperty''' : une propriété transitive (ex: has-part dans AfricanWildlife : si A has-part B et B has-part C, alors A has-part C).
+
+! Pourquoi c'est un défi technique
+
+Le problème c'est que chaque fichier utilise des éléments différents. Mes 3 fichiers n'utilisent pas les mêmes types de classes ni les mêmes types de propriétés :
+
+'''AfricanWildlife.owl :'''
+* Utilise owl:Class, owl:ObjectProperty, owl:TransitiveProperty
+* A des restrictions OWL (someValuesFrom, allValuesFrom)
+* A des propriétés inverses (eats / eaten-by)
+
+'''bckmJSON.owl :'''
+* Utilise owl:Class, owl:ObjectProperty, owl:DatatypeProperty
+* Format JSON-LD (pas XML)
+* 628 classes — beaucoup plus gros
+
+'''human.rdfs :'''
+* Utilise rdfs:Class et rdf:Property (pas owl:Class)
+* A des labels multilingues (EN et FR)
+* A une hiérarchie de propriétés (subPropertyOf)
+* Héritage multiple (Man hérite de Person ET Male)
+
+'''test_simple.owl :'''
+* Utilise owl:Class, owl:ObjectProperty, owl:DatatypeProperty
+* A une propriété inverse (mange / estMangePar)
+* A une propriété symétrique (amiAvec)
+* Tout est en français (labels, commentaires)
+
+Mon parser doit donc gérer '''tous ces cas''' de manière unifiée.
+
+
+!! 2. Analyse des 4 fichiers ontologiques
+
+! AfricanWildlifeOntology1.owl
+
+'''Format :''' RDF/XML (OWL 2)%%%
+'''Namespace :''' http://www.meteck.org/teaching/ontologies/AfricanWildlifeOntology1.owl#%%%
+'''Classes :''' 30%%%
+'''Propriétés :''' 5
+
+'''Hiérarchie des classes :'''
+ animal
+   carnivore
+     lion
+   herbivore
+     Elephant
+     giraffe
+   Omnivore
+   Impala
+   RockDassie
+   Warthog
+ plant
+   CarnivorousPlant
+   Grass
+   Palmtree
+   tasty-plant
+   tree
+   leaf
+ PlantParts
+   FruitingBody
+     Berry
+     Apple
+   Phloem
+   Root
+   Stem
+   Twig
+   Xylem
+   branch
+
+'''Propriétés :'''
+* '''eats''' : ObjectProperty, inverse de eaten-by
+* '''eaten-by''' : ObjectProperty, inverse de eats
+* '''has-part''' : TransitiveProperty, inverse de is-part-of
+* '''is-part-of''' : TransitiveProperty, Reflexive
+* '''is-proper-part-of''' : sous-propriété de is-part-of, Irreflexive
+
+'''Particularités :''' Ce fichier a des restrictions OWL complexes. Par exemple, '''carnivore''' est défini comme un animal qui mange seulement (allValuesFrom) des animaux. '''lion''' a une restriction someValuesFrom sur eats vers Impala (le lion mange au moins des impalas).
+
+! bckmJSON.owl
+
+'''Format :''' JSON-LD%%%
+'''Namespace :''' http://desiree-project.eu/bckm#%%%
+'''Classes :''' 628%%%
+'''Propriétés :''' 46
+
+C'est une grosse ontologie médicale sur le cancer du sein (Breast Cancer Knowledge Model). Les concepts incluent PatientEntity, LesionEntity, BreastCancerProcedure, et des centaines de sous-types de traitements (ChemotherapyRegimen, AnastrozoleTherapy, etc.).
+
+'''Particularité :''' Le format JSON-LD est complètement différent du XML. Quand mon parser lit les 200 premiers caractères du fichier et voit un crochet [, il sait que c'est du JSON-LD et utilise le bon parser EasyRDF.
+
+! human_2007_09_11.rdfs
+
+'''Format :''' RDFS (RDF Schema en XML)%%%
+'''Namespace :''' http://www.inria.fr/2007/09/11/humans.rdfs%%%
+'''Classes :''' 8%%%
+'''Propriétés :''' 14
+
+'''Hiérarchie des classes :'''
+ Animal
+   Male
+     Man
+   Female
+     Woman
+   Person
+     Man
+     Woman
+     Lecturer
+     Researcher
+
+'''Particularités :'''%%%
+Ce fichier utilise '''rdfs:Class''' au lieu de '''owl:Class'''. Il utilise '''rdf:Property''' au lieu de '''owl:ObjectProperty'''. C'est plus simple mais mon parser doit quand même les détecter.%%%
+Il a des '''labels multilingues''' : chaque classe et propriété a un label en français et en anglais. Mon parser priorise le français.%%%
+'''Man''' hérite de deux classes à la fois (Person et Male). C'est un '''héritage multiple'''.%%%
+Les propriétés ont une hiérarchie : '''hasFather''' est sous-propriété de '''hasParent''', qui est sous-propriété de '''hasAncestor'''.
+
+! test_simple.owl — Le fichier simple en français
+
+'''Format :''' RDF/XML (OWL)%%%
+'''Namespace :''' http://example.org/test#%%%
+'''Classes :''' 10%%%
+'''Propriétés :''' 7 (4 ObjectProperty + 3 DatatypeProperty)
+
+J'ai créé ce fichier pour avoir une '''ontologie simple et compréhensible en français'''. Les 3 autres fichiers (AfricanWildlife, bckmJSON, human) sont des ontologies existantes en anglais ou très grosses. Quelqu'un qui découvre le projet pour la première fois pourrait avoir du mal à comprendre les concepts (cancer du sein, faune africaine...). Avec test_simple.owl, tout est en français avec des données du quotidien que tout le monde connaît.
+
+'''Hiérarchie des classes :'''
+ Être
+   Animal
+     Mammifère
+       Chien
+       Chat
+     Oiseau
+       Aigle
+   Plante
+     Arbre
+     Fleur
+
+C'est une hiérarchie très claire : '''Être''' est la racine, avec deux branches principales '''Animal''' et '''Plante'''. Les animaux se divisent en '''Mammifère''' (Chien, Chat) et '''Oiseau''' (Aigle). Les plantes se divisent en '''Arbre''' et '''Fleur'''. Chaque classe a un label et un commentaire en français (par exemple, Mammifère = "Animal qui allaite ses petits").
+
+'''Propriétés ObjectProperty :'''
+* '''mange''' : domain Animal, range Être — relation de prédation ou alimentation
+* '''estMangePar''' : inverse de mange (owl:inverseOf)
+* '''habite''' : domain Animal — où vit l'animal
+* '''amiAvec''' : domain Animal, range Animal — propriété symétrique (owl:SymmetricProperty)
+
+'''Propriétés DatatypeProperty :'''
+* '''nom''' : domain Être, range xsd:string
+* '''âge''' : domain Animal, range xsd:integer
+* '''poids (kg)''' : domain Animal, range xsd:float
+
+'''Pourquoi ce fichier est utile pour comprendre le projet :'''
+
+# '''Les classes et la hiérarchie''' sont évidentes : tout le monde sait qu'un Chien est un Mammifère qui est un Animal. C'est le concept de rdfs:subClassOf rendu concret.
+# '''Les ObjectProperty''' montrent des relations entre classes : un Animal mange un Être, un Animal habite quelque part. C'est exactement ce que font owl:ObjectProperty, rdfs:domain et rdfs:range.
+# '''Les DatatypeProperty''' montrent des propriétés vers des types simples : un nom est un string, un âge est un integer. C'est la différence entre owl:ObjectProperty et owl:DatatypeProperty.
+# '''owl:inverseOf''' est illustré simplement : "mange" et "estMangePar" sont inverses. Si le Chien mange la Plante, alors la Plante estMangéePar le Chien.
+# '''owl:SymmetricProperty''' est illustré avec "amiAvec" : si le Chien est ami avec le Chat, alors le Chat est ami avec le Chien.
+# '''Tout est en français''' : les labels, les commentaires, les noms de propriétés. Pas besoin de traduire mentalement.
+
+En ouvrant ce fichier dans le visualiseur, on voit immédiatement un arbre propre avec des noms français. C'est le fichier idéal pour une démonstration ou pour expliquer le fonctionnement du projet à quelqu'un qui ne connaît pas les ontologies.
+
+
+!! 3. Choix d'architecture
+
+! Pourquoi PHP 8 en MVC ?
+
+C'était imposé par le prof. Le pattern MVC (Model-View-Controller) sépare la logique :
+* '''Models''' : la logique métier (parser, concepts, propriétés)
+* '''Views''' : l'affichage HTML
+* '''Controllers''' : le lien entre les deux (routing, API)
+
+PHP 8 apporte le '''match()''' qui remplace les switch/case, les '''typed properties''', et '''str_starts_with()''' que j'utilise dans le parser.
+
+! Pourquoi EasyRDF ?
+
+'''EasyRDF''' est la bibliothèque PHP de référence pour parser du RDF. Elle supporte RDF/XML nativement et JSON-LD via le package '''ml/json-ld'''. Après le parsing, on accède aux données avec une API simple :
+
+ $graph->allOfType('owl:Class')    // retourne Être, Animal, Mammifère, Chien, Chat, Oiseau, Aigle, Plante, Arbre, Fleur
+ $resource->all('rdfs:subClassOf') // pour Chien, retourne [Mammifère]
+ $resource->label('fr')            // pour Chien, retourne "Chien"
+ $resource->get('owl:inverseOf')   // pour estMangePar, retourne mange
+
+Sans EasyRDF, j'aurais dû parser le XML à la main avec DOMDocument et le JSON-LD manuellement — beaucoup plus de travail et de bugs potentiels.
+
+! Pourquoi D3.js ?
+
+'''D3.js v7''' est la bibliothèque de référence pour les visualisations de données. Elle fournit :
+* '''d3.tree()''' : layout pour les arbres (collapse, radial)
+* '''d3.pack()''' : layout pour les cercles imbriqués (coupe)
+* '''d3.forceSimulation()''' : simulation physique (force-directed)
+* '''d3.zoom()''' : gestion du zoom et du pan
+* '''d3.hierarchy()''' : conversion de données JSON en hiérarchie navigable
+
+D3 est chargé depuis le CDN dans le layout.php :
+
+ <script src="https://d3js.org/d3.v7.min.js"></script>
+
+
+!! 4. Structure du projet
+
+ project/
+   composer.json
+   config/
+     config.php
+   controllers/
+     OntologyController.php
+     VisualizationController.php
+     ApiController.php
+   models/
+     OntologyParser.php
+     ConceptModel.php
+     PropertyModel.php
+     GraphDataModel.php
+   views/
+     layout.php
+     home.php
+     visualization.php
+   public/
+     index.php
+     css/
+       style.css
+     js/
+       app.js
+       stateManager.js
+       colorManager.js
+       graphs/
+         collapse.js
+         radial.js
+         coupe.js
+         force.js
+   data/
+     AfricanWildlifeOntology1.owl
+     bckmJSON.owl
+     human_2007_09_11.rdfs
+     test_simple.owl
+
+'''Explication de chaque dossier :'''
+* '''config/''' : constantes (chemins, namespaces OWL/RDFS/RDF)
+* '''controllers/''' : les 3 contrôleurs (home, visualisation, API JSON)
+* '''models/''' : le parser EasyRDF et les modèles de données
+* '''views/''' : les templates PHP (layout + pages)
+* '''public/''' : le point d'entrée web (index.php) + assets (CSS, JS)
+* '''public/js/graphs/''' : les 4 visualisations D3.js
+* '''data/''' : les fichiers ontologie (pré-chargés ou uploadés)
+
+
+!! 5. Installation et lancement
+
+! Prérequis
+
+* PHP 8.0 ou supérieur
+* Composer (gestionnaire de dépendances PHP)
+
+! Étapes
+
+'''1. Installer les dépendances :'''
+
+ composer install
+
+Cela installe '''easyrdf/easyrdf''' et '''ml/json-ld''' (pour le support JSON-LD).
+
+'''2. Lancer le serveur de développement PHP :'''
+
+ php -S localhost:8000 -t public
+
+'''3. Ouvrir le navigateur :'''%%%
+Aller sur http://localhost:8000
+
+'''4. Sélectionner une ontologie :'''%%%
+Sur la page d'accueil, cliquer sur l'un des 4 fichiers pour ouvrir la visualisation. Pour une première découverte, je recommande '''test_simple.owl''' car tout est en français et facile à comprendre.
+
+! Le fichier composer.json
+
+ {
+     "name": "ontology/visualizer",
+     "description": "Ontology OWL/RDFS Visualizer with D3.js",
+     "require": {
+         "php": ">=8.0",
+         "easyrdf/easyrdf": "^1.1",
+         "ml/json-ld": "^1.2"
+     },
+     "autoload": {
+         "classmap": [
+             "models/",
+             "controllers/"
+         ]
+     }
+ }
+
+'''Pourquoi ml/json-ld :''' EasyRDF sait parser du RDF/XML nativement, mais pour JSON-LD il a besoin de cette bibliothèque externe. Sans elle, le fichier bckmJSON.owl provoque une erreur "Class ML\JsonLD\JsonLD not found".
+
+
+!! 6. Le backend : OntologyParser (le coeur du projet)
+
+! Vue d'ensemble
+
+Le fichier '''models/OntologyParser.php''' est le coeur du projet. C'est lui qui :
+# Charge un fichier ontologie (détecte le format automatiquement)
+# Extrait toutes les classes (owl:Class + rdfs:Class)
+# Extrait toutes les propriétés (ObjectProperty + DatatypeProperty + rdf:Property)
+# Construit les hiérarchies (arbre des classes, arbre des propriétés)
+# Extrait les restrictions OWL
+# Formate les données pour D3.js
+
+! Chargement d'un fichier : loadFile()
+
+ public function loadFile(string $filepath): void
+ {
+     $this->graph = new Graph();
+     $format = $this->detectFormat($filepath);
+     $data = file_get_contents($filepath);
+     $this->graph->parse($data, $format);
+     $this->baseUri = $this->detectBaseUri();
+ }
+
+'''Ce qui se passe :'''
+# Je crée un '''Graph''' EasyRDF vide
+# Je '''détecte le format''' en lisant les 200 premiers caractères du fichier
+# Je '''charge le contenu''' du fichier en mémoire
+# Je '''parse''' avec EasyRDF (qui transforme le RDF en un graphe navigable en PHP)
+# Je '''détecte le namespace''' de base de l'ontologie
+
+! Détection automatique du format : detectFormat()
+
+ private function detectFormat(string $filepath): string
+ {
+     $content = file_get_contents($filepath, false, null, 0, 200);
+     if (str_starts_with(trim($content), '[') || str_starts_with(trim($content), '{')) {
+         return 'jsonld';
+     }
+     return 'rdfxml';
+ }
+
+'''Logique :''' Si les premiers caractères du fichier sont [ ou {, c'est du JSON-LD. Sinon c'est du RDF/XML. Simple mais efficace pour nos 3 fichiers.
+
+! Extraction des classes : getAllClassResources()
+
+ private function getAllClassResources(): array
+ {
+     $resources = [];
+     $seen = [];
+     foreach ($this->graph->allOfType('owl:Class') as $r) {
+         if ($r->isBNode()) continue;
+         $uri = $r->getUri();
+         if (!isset($seen[$uri])) {
+             $resources[] = $r;
+             $seen[$uri] = true;
+         }
+     }
+     foreach ($this->graph->allOfType('rdfs:Class') as $r) {
+         if ($r->isBNode()) continue;
+         $uri = $r->getUri();
+         if (!isset($seen[$uri])) {
+             $resources[] = $r;
+             $seen[$uri] = true;
+         }
+     }
+     return $resources;
+ }
+
+'''Pourquoi deux boucles :''' Parce que AfricanWildlife et bckmJSON utilisent '''owl:Class''', tandis que human utilise '''rdfs:Class'''. Je dois chercher les deux types.
+
+'''Pourquoi isBNode() :''' Un blank node (BNode) est un noeud anonyme dans RDF. Les restrictions OWL créent des BNodes qu'il ne faut pas confondre avec de vraies classes. Je les ignore ici.
+
+'''Pourquoi $seen :''' Pour éviter les doublons si une classe apparaît dans les deux types.
+
+! Conversion d'une ressource en ConceptModel : resourceToConcept()
+
+ private function resourceToConcept(Resource $resource): ConceptModel
+ {
+     $uri = $resource->getUri();
+     $label = $this->getLabel($resource);
+     $comment = $this->getComment($resource);
+     $parents = [];
+     foreach ($resource->all('rdfs:subClassOf') as $parent) {
+         if ($parent instanceof Resource && !$parent->isBNode()) {
+             $parentUri = $parent->getUri();
+             if (!$this->isStandardUri($parentUri)) {
+                 $parents[] = $parentUri;
+             }
+         }
+     }
+     $restrictions = $this->extractRestrictions($resource);
+     $concept = new ConceptModel($uri, $label);
+     $concept->setComment($comment);
+     $concept->setParentUris($parents);
+     $concept->setRestrictions($restrictions);
+     return $concept;
+ }
+
+'''Ce qui se passe :'''
+# Je récupère l'URI (l'identifiant unique de la classe)
+# Je récupère le label (le nom lisible, en priorité français)
+# Je récupère le commentaire (la description)
+# Je cherche tous les parents via '''rdfs:subClassOf'''
+# Je filtre les BNodes (restrictions anonymes) et les URIs standard (owl:Thing)
+# Je crée un objet '''ConceptModel''' avec toutes ces infos
+
+'''Pourquoi isStandardUri() :''' Je ne veux pas que owl:Thing, rdfs:Class, etc. apparaissent comme des concepts dans mon arbre. Ce sont des classes du vocabulaire RDF/OWL, pas des concepts métier.
+
+! Extraction des restrictions : parseRestriction()
+
+ private function parseRestriction(Resource $bnode): ?array
+ {
+     $onProperty = $bnode->get('owl:onProperty');
+     if (!$onProperty) return null;
+     $restriction = [
+         'property' => $onProperty->getUri(),
+         'propertyLabel' => $this->localName($onProperty->getUri()),
+     ];
+     if ($sv = $bnode->get('owl:someValuesFrom')) {
+         $restriction['type'] = 'someValuesFrom';
+         if (!$sv->isBNode()) {
+             $restriction['value'] = $sv->getUri();
+             $restriction['valueLabel'] = $this->localName($sv->getUri());
+         }
+     } elseif ($av = $bnode->get('owl:allValuesFrom')) {
+         $restriction['type'] = 'allValuesFrom';
+         if (!$av->isBNode()) {
+             $restriction['value'] = $av->getUri();
+             $restriction['valueLabel'] = $this->localName($av->getUri());
+         }
+     }
+     return $restriction;
+ }
+
+'''Comment ça marche :''' En OWL, quand une classe a un rdfs:subClassOf qui pointe vers un BNode de type owl:Restriction, ça signifie une contrainte. Par exemple dans test_simple.owl, la propriété '''mange''' relie un Animal à un Être :
+
+ <owl:ObjectProperty rdf:about="#mange">
+     <rdfs:label>mange</rdfs:label>
+     <rdfs:domain rdf:resource="#Animal"/>
+     <rdfs:range rdf:resource="#Etre"/>
+ </owl:ObjectProperty>
+
+Et '''estMangePar''' est l'inverse de mange (owl:inverseOf). Dans AfricanWildlife, on retrouve des restrictions plus complexes : le lion a une restriction allValuesFrom sur eats → herbivore, ce qui veut dire '''le lion mange seulement des herbivores'''. Mon parser extrait ces infos et les stocke dans le ConceptModel pour les afficher dans les tooltips.
+
+! Construction de la hiérarchie : getClassHierarchy()
+
+ public function getClassHierarchy(?string $rootUri = null, int $depth = -1): array
+ {
+     $classes = $this->getClasses();
+     $childrenMap = [];
+     $roots = [];
+     foreach ($classes as $uri => $concept) {
+         $parents = $concept->getParentUris();
+         if (empty($parents)) {
+             $roots[] = $uri;
+         }
+         foreach ($parents as $parentUri) {
+             $childrenMap[$parentUri][] = $uri;
+         }
+     }
+     if ($rootUri !== null && isset($classes[$rootUri])) {
+         return $this->buildTree($rootUri, $classes, $childrenMap, $depth);
+     }
+     // ... sinon construire la forêt complète
+ }
+
+'''Algorithme :'''
+# Je récupère toutes les classes
+# Je construis un '''childrenMap''' : pour chaque parent, la liste de ses enfants
+# Les classes sans parent sont les '''racines''' (roots)
+# Si un concept spécifique est demandé, je construis l'arbre à partir de lui
+# Sinon, je construis la '''forêt complète''' (tous les arbres depuis les racines)
+# Si il y a plusieurs racines, je les regroupe sous un noeud virtuel '''owl:Thing'''
+
+Le paramètre '''depth''' contrôle jusqu'où on descend. -1 = illimité, 2 = deux niveaux sous la racine.
+
+! Extraction des propriétés : getProperties()
+
+La méthode getProperties() fonctionne sur le même principe que getClasses(), mais en cherchant 4 types différents :
+# '''owl:ObjectProperty''' : propriétés entre classes (eats, has-part)
+# '''owl:DatatypeProperty''' : propriétés vers des types simples (age -> integer)
+# '''owl:TransitiveProperty''' : propriétés transitives (has-part)
+# '''rdf:Property''' : propriétés RDFS simples (hasAncestor, hasFather)
+
+Pour chaque propriété, je récupère aussi :
+* Le '''domain''' (classe source) et le '''range''' (classe cible)
+* Si elle est '''transitive''', '''réflexive''', ou '''irréflexive'''
+* Sa '''propriété inverse''' (owl:inverseOf)
+* Ses '''super-propriétés''' (rdfs:subPropertyOf)
+
+! Récupération des labels multilingues : getLabel()
+
+ private function getLabel(Resource $resource): string
+ {
+     $label = $resource->label('fr') ?? $resource->label('en') ?? $resource->label();
+     if ($label) return (string) $label;
+     return $this->localName($resource->getUri());
+ }
+
+'''Priorité :''' français d'abord, puis anglais, puis n'importe quel label. Si aucun label n'existe, j'extrais le '''nom local''' de l'URI (la partie après le # ou le dernier /). Par exemple, http://example.org/ontology#animal donne "animal".
+
+C'est grâce à ça que le fichier human affiche "homme" au lieu de "Man", "femme" au lieu de "Woman", etc.
+
+
+!! 7. Les modèles : ConceptModel, PropertyModel, GraphDataModel
+
+! ConceptModel
+
+Représente une '''classe''' (concept) de l'ontologie.
+
+'''Attributs :'''
+* '''uri''' : l'identifiant unique (ex: http://...#animal)
+* '''label''' : le nom lisible (ex: "animal")
+* '''comment''' : la description textuelle
+* '''parentUris''' : tableau des URIs des classes parentes (rdfs:subClassOf)
+* '''restrictions''' : tableau des restrictions OWL (someValuesFrom, allValuesFrom)
+
+'''Pourquoi stocker les parentUris :''' Pour construire la hiérarchie. Chaque concept connaît ses parents, et avec ces infos je construis un arbre parent→enfants.
+
+! PropertyModel
+
+Représente une '''propriété''' (relation) de l'ontologie.
+
+'''Attributs :'''
+* '''uri, label, comment''' : comme ConceptModel
+* '''domain''' : la classe source (ex: Animal)
+* '''range''' : la classe cible (ex: Animal) ou le type (ex: string)
+* '''propertyType''' : "object", "datatype", ou "rdf"
+* '''transitive, reflexive, irreflexive''' : caractéristiques OWL
+* '''inverseOf''' : URI de la propriété inverse
+* '''superProperties''' : parents dans la hiérarchie de propriétés
+
+! GraphDataModel
+
+Formate les données pour D3.js. Deux formats principaux :
+
+'''Format arbre''' (pour collapse, radial, coupe) :
+
+ {
+   "name": "animal",
+   "uri": "http://...",
+   "children": [
+     { "name": "carnivore", "children": [...] },
+     { "name": "herbivore", "children": [...] }
+   ]
+ }
+
+'''Format force''' (pour force-directed) :
+
+ {
+   "nodes": [
+     { "id": "uri1", "label": "animal", "group": "root" }
+   ],
+   "links": [
+     { "source": "uri1", "target": "uri2", "label": "subClassOf" }
+   ]
+ }
+
+
+!! 8. Les contrôleurs et l'API JSON
+
+! Le routeur : public/index.php
+
+ $action = $_GET['action'] ?? 'home';
+ match ($action) {
+     'home'          => (new OntologyController())->index(),
+     'upload'        => (new OntologyController())->upload(),
+     'visualization' => (new VisualizationController())->show(),
+     'api'           => (new ApiController())->handle(),
+     default         => (new OntologyController())->index(),
+ };
+
+'''Fonctionnement :''' Toutes les requêtes passent par public/index.php. Le paramètre '''?action=''' détermine quel contrôleur appeler. J'utilise '''match()''' de PHP 8 au lieu d'un switch.
+
+! OntologyController
+
+'''index()''' : affiche la page d'accueil avec la liste des fichiers disponibles et le formulaire d'upload.%%%
+'''upload()''' : gère l'upload d'un fichier OWL/RDFS, vérifie l'extension, et le sauvegarde dans data/.
+
+! VisualizationController
+
+'''show()''' : reçoit le paramètre '''?file=''', charge l'ontologie avec OntologyParser, récupère la liste des classes et propriétés, et passe tout à la vue visualization.php. C'est comme ça que les listes déroulantes de la sidebar sont remplies côté serveur.
+
+! ApiController — l'API JSON
+
+L'ApiController expose '''7 endpoints''' que le JavaScript appelle en AJAX :
+
+'''?action=api&file=X&endpoint=classes''' :%%%
+Retourne toutes les classes en JSON.
+
+'''?action=api&file=X&endpoint=properties''' :%%%
+Retourne toutes les propriétés en JSON.
+
+'''?action=api&file=X&endpoint=hierarchy&concept=URI&depth=N''' :%%%
+Retourne l'arbre hiérarchique des classes. Si concept est fourni, l'arbre part de ce concept. depth contrôle la profondeur (-1 = illimitée).
+
+'''?action=api&file=X&endpoint=property-hierarchy&property=URI''' :%%%
+Retourne l'arbre hiérarchique des propriétés (subPropertyOf).
+
+'''?action=api&file=X&endpoint=concept-properties&concept=URI''' :%%%
+Retourne les propriétés applicables à un concept donné (par matching de domain + restrictions).
+
+'''?action=api&file=X&endpoint=combined&concept=URI&depth=N''' :%%%
+Retourne la vue combinée : hiérarchie du concept enrichie avec les propriétés de chaque noeud.
+
+'''?action=api&file=X&endpoint=force&concept=URI''' :%%%
+Retourne les données au format nodes/links pour le graphe force-directed.
+
+Le routage interne de l'ApiController utilise aussi match() :
+
+ match ($endpoint) {
+     'classes'            => $this->getClasses(),
+     'properties'         => $this->getProperties(),
+     'hierarchy'          => $this->getHierarchy(),
+     'property-hierarchy' => $this->getPropertyHierarchy(),
+     'concept-properties' => $this->getConceptProperties(),
+     'combined'           => $this->getCombined(),
+     'force'              => $this->getForce(),
+     default              => $this->error('Unknown endpoint'),
+ };
+
+
+!! 9. Le frontend : les vues PHP
+
+! layout.php : le template de base
+
+Toutes les pages héritent de layout.php via le système '''ob_start() / ob_get_clean()''' :
+
+ <?php $title = 'Ma page'; ?>
+ <?php ob_start(); ?>
+   <!-- contenu de la page -->
+ <?php $content = ob_get_clean(); ?>
+ <?php require 'layout.php'; ?>
+
+Dans layout.php, la variable $content est injectée dans le HTML. C'est un système de template simple sans bibliothèque externe.
+
+! home.php : la page d'accueil
+
+Affiche une '''grille de fichiers''' (les ontologies disponibles dans data/) et un '''formulaire d'upload'''. Chaque fichier est un lien cliquable vers la page de visualisation.
+
+! visualization.php : la page de visualisation
+
+C'est la page principale. Elle contient :
+
+'''La sidebar (aside) :'''
+* Un select '''Concept''' : liste toutes les classes (rempli côté PHP)
+* Un select '''Profondeur''' : de 1 à 5, ou illimitée
+* Un select '''Mode''' : héritage, propriétés, hiérarchie de propriétés, combiné
+* Un select '''Propriété''' : pour la hiérarchie de propriétés
+* Le bouton '''Visualiser'''
+* Un '''panneau d'info''' qui s'affiche quand on clique sur un noeud
+
+'''La zone principale :'''
+* Une '''barre d'outils''' avec les 4 onglets (Collapse, Radial, Coupe, Force) et les boutons zoom
+* Le '''conteneur du graphe''' (#graph-container) où D3.js dessine
+
+'''Le passage des données au JavaScript :'''
+
+ <script>
+     window.ONTO_FILE = <?= json_encode($fileName) ?>;
+     window.API_BASE = '?action=api&file=' + encodeURIComponent(window.ONTO_FILE);
+ </script>
+
+Ces deux variables globales permettent au JS de construire les URLs d'API.
+
+
+!! 10. Les 4 visualisations D3.js
+
+! Vue Collapse (collapse.js) — Arbre dépliable horizontal
+
+'''Principe :''' Un arbre horizontal où la racine est à gauche. Chaque noeud peut être cliqué pour déplier ou replier ses enfants. Les transitions sont animées.
+
+'''Comment ça marche :'''
+# Les données JSON sont converties en hiérarchie D3 avec '''d3.hierarchy()'''
+# Le layout '''d3.tree()''' calcule les positions x,y de chaque noeud
+# Les enfants de profondeur > 1 sont '''repliés''' au départ (stockés dans _children au lieu de children)
+# Quand on clique un noeud, on échange children et _children, puis on rappelle '''_update()'''
+# La méthode _update() utilise le pattern '''enter/update/exit''' de D3 pour animer les transitions
+
+'''Le pattern enter/update/exit :'''
+* '''enter''' : les nouveaux noeuds apparaissent (animation depuis le parent)
+* '''update''' : les noeuds existants se déplacent vers leur nouvelle position
+* '''exit''' : les noeuds supprimés disparaissent (animation vers le parent)
+
+'''Les liens''' entre noeuds sont des courbes de Bézier cubiques dessinées avec un path SVG.
+
+'''Les couleurs :''' Chaque noeud est coloré en fonction de sa '''famille''' (son ancêtre racine). Un noeud replié (qui a des enfants cachés) est affiché en couleur pleine. Un noeud déplié ou feuille est semi-transparent.
+
+! Vue Radial (radial.js) — Arbre radial collapsible
+
+'''Principe :''' Même logique que Collapse, mais en '''coordonnées polaires'''. La racine est au centre, les enfants sont disposés en cercles concentriques autour.
+
+'''Différences avec Collapse :'''
+* Le layout utilise '''d3.tree().size([2 * Math.PI, radius])''' : l'angle va de 0 à 2*PI, le rayon détermine la profondeur
+* Les positions sont calculées en '''radians''', puis converties avec rotate() et translate()
+* Les liens utilisent '''d3.linkRadial()''' au lieu de courbes de Bézier manuelles
+* Des '''cercles guides''' en pointillé montrent les niveaux de profondeur
+* Les labels sont '''retournés à 180°''' quand ils sont du côté gauche (pour rester lisibles)
+
+'''L'interactivité est identique :''' cliquer un noeud = déplier/replier. Un noeud replié (couleur pleine) indique visuellement qu'il y a des enfants cachés.
+
+'''Tooltip :''' Au survol, un tooltip affiche le nom, le commentaire, le nombre d'enfants et l'état (replié/déplié).
+
+! Vue Coupe (coupe.js) — Cercles imbriqués zoomables
+
+'''Principe :''' La racine est un '''rectangle''', et tous les sous-concepts sont des '''cercles imbriqués''' les uns dans les autres. On peut cliquer un cercle pour '''zoomer dedans''' et voir ses enfants en plus grand. C'est un '''zoomable circle packing'''.
+
+'''Comment ça marche :'''
+# Les données sont converties en hiérarchie avec '''d3.hierarchy().sum(() => 1)'''
+# Le layout '''d3.pack()''' calcule la position et le rayon de chaque cercle
+# La racine est dessinée comme un rectangle SVG avec son label au-dessus
+# Tous les autres noeuds sont des cercles SVG positionnés relativement
+
+'''Le zoom interactif :'''
+* Cliquer un cercle = '''_zoomTo(d)''' : animation fluide qui centre et agrandit ce cercle
+* Cliquer le même cercle à nouveau = zoom out vers le parent
+* Cliquer le fond (rectangle racine) = retour à la vue globale
+* '''d3.interpolateZoom''' calcule une transition fluide entre l'ancienne et la nouvelle vue
+* Pendant la transition, tous les cercles et labels sont '''repositionnés et redimensionnés''' à chaque frame
+* À la fin de la transition, les labels sont '''affichés ou cachés''' selon la taille du cercle à l'écran
+
+'''Gestion des labels :'''%%%
+Un label n'est visible que si son cercle est assez grand à l'écran. Quand on zoome dans un cercle, ses enfants deviennent plus grands et leurs labels apparaissent. C'est ce qui donne l'effet de '''drill-down progressif'''.
+
+! Vue Force (force.js) — Graphe force-directed
+
+'''Principe :''' Les noeuds se '''repoussent''' les uns les autres, et les liens les '''attirent'''. La simulation physique place automatiquement les noeuds pour minimiser les chevauchements.
+
+'''Comment ça marche :'''
+# Les données sont au format '''nodes/links''' (différent de l'arbre)
+# '''d3.forceSimulation()''' crée une simulation avec 4 forces :
+#* '''forceLink''' : les liens attirent les noeuds connectés (distance 100)
+#* '''forceManyBody''' : les noeuds se repoussent (strength -200)
+#* '''forceCenter''' : les noeuds sont attirés vers le centre du SVG
+#* '''forceCollide''' : empêche les noeuds de se superposer (rayon 30)
+# À chaque '''tick''' de la simulation, les positions sont mises à jour
+# Les noeuds sont '''draggables''' : on peut les attraper et les déplacer
+
+'''Types de liens :'''
+* Les liens d'héritage (subClassOf) sont en '''trait plein'''
+* Les liens de propriété (restrictions) sont en '''pointillé''' de couleur différente
+
+'''Particularité :''' Quand on quitte la vue Force pour une autre, je dois '''détruire la simulation''' (ForceGraph.destroy()) sinon elle continue à tourner en arrière-plan et consomme du CPU.
+
+
+!! 11. La gestion de l'état (StateManager)
+
+Le '''StateManager''' (stateManager.js) permet de '''garder les sélections de l'utilisateur''' quand il change de vue.
+
+'''Problème :''' Quand je passe de Collapse à Radial, je ne veux pas perdre le concept sélectionné, la profondeur choisie et le mode actif.
+
+'''Solution :''' Le StateManager stocke l'état dans un objet JavaScript ET dans '''sessionStorage''' (persistance entre les rechargements de page).
+
+'''saveFormState()''' : lit les valeurs des selects et les sauvegarde.%%%
+'''restoreFormState()''' : au chargement de la page, remet les valeurs sauvegardées dans les selects et active le bon onglet.
+
+ StateManager.set('concept', 'http://...#animal');
+ StateManager.set('graph', 'radial');
+ StateManager.get('concept'); // retourne 'http://...#animal'
+
+'''Quand est-ce appelé :'''
+* '''saveFormState()''' est appelé à chaque loadData() (avant de faire l'appel API)
+* '''restoreFormState()''' est appelé une seule fois au init() de App
+
+
+!! 12. La gestion des couleurs (ColorManager)
+
+Le '''ColorManager''' (colorManager.js) assigne une '''couleur cohérente''' à chaque famille de concepts.
+
+'''Principe :''' Chaque concept appartient à une "famille" qui est son '''ancêtre racine'''. Par exemple, tous les descendants de "animal" (carnivore, lion, herbivore...) ont la même couleur. Tous les descendants de "plant" ont une autre couleur.
+
+'''Palette de 16 couleurs :'''
+
+ palette: [
+     '#6c8aff', '#4ecdc4', '#ff6b6b', '#ffd93d',
+     '#a29bfe', '#fd79a8', '#00b894', '#e17055',
+     '#0984e3', '#d63031', '#00cec9', '#fdcb6e',
+     '#6c5ce7', '#fab1a0', '#55efc4', '#74b9ff',
+ ]
+
+'''ColorManager.get(family)''' : retourne la couleur assignée à cette famille. La première fois, elle est prise dans la palette. Les appels suivants retournent la même couleur.
+
+'''ColorManager.getAlpha(family, 0.3)''' : retourne la même couleur mais avec une opacité (pour les noeuds feuilles ou les fonds de cercles).
+
+'''ColorManager.reset()''' : remet les assignations à zéro. Appelé à chaque loadData() pour que les couleurs soient cohérentes quand on change de concept racine.
+
+
+!! 13. Le contrôleur JavaScript principal (app.js)
+
+Le fichier '''app.js''' est le chef d'orchestre côté client. Il connecte la sidebar, l'API, et les 4 visualisations.
+
+! Initialisation : init()
+
+ init() {
+     StateManager.restoreFormState();
+     this.currentGraph = StateManager.get('graph', 'collapse');
+     // Bind tabs, selects, zoom buttons...
+     ['select-concept', 'select-depth', 'select-mode', 'select-property'].forEach(id => {
+         document.getElementById(id)?.addEventListener('change', () => this.loadData());
+     });
+     this.loadData();
+ }
+
+'''Auto-reload :''' Chaque '''changement''' dans un select déclenche automatiquement loadData(). Plus besoin de cliquer sur "Visualiser".
+
+! Chargement des données : loadData()
+
+'''Flux :'''
+# Lire les valeurs des selects (concept, profondeur, mode, propriété)
+# Sauvegarder l'état (StateManager.saveFormState())
+# Construire l'URL d'API selon le mode et le type de graphe actif
+# Appeler l'API en '''fetch()''' asynchrone
+# Transformer les données si nécessaire (ex: propriétés en arbre)
+# Appeler '''_renderCurrent()''' pour dessiner le graphe
+
+'''Choix de l'endpoint selon le mode :'''
+* Mode '''hierarchy''' : endpoint=hierarchy
+* Mode '''properties''' : endpoint=concept-properties (puis conversion en arbre avec _propsToTree)
+* Mode '''prop-hierarchy''' : endpoint=property-hierarchy
+* Mode '''combined''' : endpoint=combined (puis enrichissement avec _combinedToTree)
+* Vue '''force''' : endpoint=force (format nodes/links, peu importe le mode)
+
+! Affichage des infos : showInfo()
+
+Quand on clique ou survole un noeud dans n'importe quelle visualisation, la méthode '''App.showInfo(data)''' est appelée. Elle met à jour le '''panneau d'info''' dans la sidebar avec le nom, l'URI, le commentaire, les propriétés et les restrictions du concept.
+
+
+!! 14. Les 5 fonctionnalités obligatoires en détail
+
+! Fonctionnalité 1 : Visualiser l'héritage à partir d'un concept C
+
+'''Comment l'utiliser (démonstration avec test_simple.owl) :'''
+# Sélectionner le concept '''Être''' dans le select "Concept"
+# Le mode est "Héritage (classes)" par défaut
+# Choisir la profondeur 2
+# La visualisation se met à jour automatiquement et montre Être → Animal/Plante → Mammifère/Oiseau/Arbre/Fleur
+
+'''Ce qui se passe :'''%%%
+Le JS appelle l'API : ?action=api&endpoint=hierarchy&concept=http://example.org/test#Etre&depth=2%%%
+Le parser PHP construit l'arbre des sous-classes en partant de Être et en descendant de 2 niveaux (Être → Animal/Plante → Mammifère/Oiseau/Arbre/Fleur, mais pas Chien/Chat/Aigle qui sont à profondeur 3).%%%
+Le JSON retourné est passé au graphe actif (Collapse, Radial ou Coupe).
+
+! Fonctionnalité 2 : Visualiser les propriétés du concept C
+
+'''Comment l'utiliser (démonstration avec test_simple.owl) :'''
+# Sélectionner le concept '''Animal'''
+# Changer le mode en "Propriétés du concept"
+# La visualisation montre Animal au centre avec ses propriétés en branches : mange (→ Être), habite, amiAvec (→ Animal), âge (→ integer), poids (→ float)
+
+'''Ce qui se passe :'''%%%
+Le JS appelle l'API : ?action=api&endpoint=concept-properties&concept=http://example.org/test#Animal%%%
+Le parser PHP trouve toutes les propriétés dont le '''domain''' est Animal : mange, habite, amiAvec, âge, poids. Il trouve aussi les propriétés héritées du parent Être : nom.%%%
+Le JS convertit la liste de propriétés en arbre (_propsToTree) pour l'afficher dans les vues arbre.
+
+! Fonctionnalité 3 : Visualiser la hiérarchie d'une propriété
+
+'''Comment l'utiliser :'''
+# Changer le mode en "Hiérarchie des propriétés"
+# Optionnel : sélectionner une propriété spécifique dans le select "Propriété"
+# La visualisation montre l'arbre des propriétés (subPropertyOf)
+
+'''Exemple avec human.rdfs :'''%%%
+hasAncestor est la racine, avec hasParent en dessous, puis hasFather et hasMother en dessous de hasParent. On voit la hiérarchie des relations familiales.
+
+! Fonctionnalité 4 : Combiner héritage + propriétés + chaîne P sur profondeur p
+
+'''Comment l'utiliser (démonstration avec test_simple.owl) :'''
+# Sélectionner le concept '''Animal''' et la profondeur 2
+# Changer le mode en "Combiné (héritage + propriétés)"
+# La visualisation montre l'arbre Animal → Mammifère/Oiseau, enrichi avec un noeud "[ Properties ]" contenant mange, habite, amiAvec, âge, poids
+
+'''Ce qui se passe :'''%%%
+Le JS appelle l'API : ?action=api&endpoint=combined&concept=http://example.org/test#Animal&depth=2%%%
+Le parser PHP construit la hiérarchie (Animal → Mammifère/Oiseau) ET enrichit chaque noeud avec ses propriétés.%%%
+Le JS ajoute un noeud spécial "[ Properties ]" comme enfant contenant les propriétés applicables.
+
+! Fonctionnalité 5 : Passer d'une vue à l'autre sans perdre l'état
+
+'''Comment ça marche :'''%%%
+Quand je clique sur un onglet (Collapse → Radial par exemple), le StateManager a déjà sauvegardé le concept sélectionné, la profondeur, le mode et la propriété. Le nouveau graphe est rendu avec les mêmes données.
+
+'''Ce qui est préservé :'''
+* Le concept sélectionné
+* La profondeur
+* Le mode (héritage/propriétés/combiné)
+* La propriété sélectionnée
+* Même en rechargeant la page (sessionStorage)
+
+
+!! 15. Comment tout fonctionne ensemble (flux complet)
+
+Voici le parcours complet quand un utilisateur ouvre l'app et visualise une ontologie :
+
+'''1. L'utilisateur accède à http://localhost:8000'''%%%
+index.php route vers OntologyController::index(). Celui-ci liste les fichiers dans data/ et affiche home.php.
+
+'''2. L'utilisateur clique sur "test_simple.owl"'''%%%
+Le lien pointe vers ?action=visualization&file=test_simple.owl. VisualizationController::show() charge le fichier avec OntologyParser, extrait les 10 classes et 7 propriétés, et affiche visualization.php avec les listes déroulantes remplies (Être, Animal, Mammifère, Chien, Chat, Oiseau, Aigle, Plante, Arbre, Fleur).
+
+'''3. La page se charge'''%%%
+D3.js est chargé depuis le CDN. Les 4 fichiers JS de graphes sont chargés. Puis app.js s'exécute : App.init() restaure l'état, bind les événements, et appelle loadData().
+
+'''4. loadData() appelle l'API'''%%%
+Requête fetch vers ?action=api&file=test_simple.owl&endpoint=hierarchy. Le PHP parse le fichier OWL avec EasyRDF, construit l'arbre (Être → Animal → Mammifère → Chien/Chat, etc.), et retourne du JSON.
+
+'''5. Le graphe est rendu'''%%%
+Le JSON est passé à CollapseGraph.render() (ou le graphe actif). D3 crée le SVG, calcule les positions, et dessine les noeuds et liens avec animations. On voit Être au centre avec ses deux branches Animal et Plante.
+
+'''6. L'utilisateur interagit'''%%%
+Il clique sur le noeud '''Animal''' pour déplier et voir Mammifère et Oiseau apparaître (Collapse, Radial). En vue Coupe, il clique sur le cercle Animal pour zoomer dedans et voir les sous-cercles Mammifère et Oiseau. Il sélectionne '''Mammifère''' dans le select concept : loadData() est rappelé automatiquement et l'arbre montre Mammifère → Chien / Chat.
+
+'''7. Il passe en mode "Propriétés du concept"'''%%%
+Il sélectionne le mode "Propriétés" avec le concept '''Animal'''. L'API retourne les propriétés applicables : mange (→ Être), habite, amiAvec (→ Animal), âge (→ integer), poids (→ float). Le graphe montre Animal au centre avec toutes ses propriétés en branches.
+
+'''8. L'état est sauvé'''%%%
+À chaque action, StateManager sauve l'état dans sessionStorage. Si l'utilisateur recharge la page, il retrouve ses sélections.
+
+
+!! Conclusion
+
+Ce projet combine plusieurs domaines :
+* '''Web sémantique''' : comprendre OWL, RDFS, RDF et les structures d'ontologies
+* '''PHP 8 backend''' : parser avec EasyRDF, architecture MVC, API JSON
+* '''JavaScript frontend''' : D3.js pour 4 types de visualisations interactives
+* '''Gestion d'état''' : StateManager pour la persistance entre vues
+
+'''Ce que j'ai appris :'''
+* Les ontologies ne sont pas toutes au même format — il faut un parser flexible
+* Les restrictions OWL sont des structures complexes (BNodes) qui demandent un traitement spécial
+* D3.js est très puissant mais demande de bien comprendre le pattern enter/update/exit
+* Le zoomable circle packing (vue Coupe) est le plus complexe à implémenter avec les animations fluides
+* La séparation MVC rend le code maintenable : le parser ne sait rien de D3, D3 ne sait rien du PHP
+
+Ce projet a été réalisé dans le cadre de la '''SAE501 : Web Sémantique''' à l'Université Sorbonne Paris Nord. Les 5 fonctionnalités demandées (héritage, propriétés, hiérarchie de propriétés, vue combinée, changement de vue sans perte d'état) sont toutes implémentées et testées sur 4 fichiers ontologiques de formats différents.
+
+''Ce wiki couvre l'intégralité du projet. En suivant chaque section, une personne partant de zéro peut comprendre tous les concepts, reproduire l'architecture, et implémenter le visualiseur de A à Z.''
