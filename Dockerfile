@@ -15,14 +15,11 @@ COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 # Définir le répertoire de travail
 WORKDIR /var/www/html
 
-# Copier les fichiers de dépendances d'abord (cache Docker)
-COPY composer.json composer.lock ./
+# Copier tout le projet d'abord (models/ et controllers/ nécessaires pour l'autoload)
+COPY . .
 
 # Installer les dépendances PHP
 RUN composer install --no-dev --optimize-autoloader
-
-# Copier le reste du projet
-COPY . .
 
 # Configurer Apache pour pointer vers public/
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
