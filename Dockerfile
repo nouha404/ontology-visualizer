@@ -1,6 +1,9 @@
-FROM php:8.2-cli
+FROM php:8.2-apache
 
-# Installer les extensions nécessaires
+# Activer mod_rewrite
+RUN a2enmod rewrite
+
+# Installer les dépendances système
 RUN apt-get update && apt-get install -y \
     unzip \
     git \
@@ -10,19 +13,26 @@ RUN apt-get update && apt-get install -y \
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # Définir le répertoire de travail
-WORKDIR /app
+WORKDIR /var/www/html
 
 # Copier les fichiers de dépendances d'abord (cache Docker)
 COPY composer.json composer.lock ./
 
-# Installer les dépendances
+# Installer les dépendances PHP
 RUN composer install --no-dev --optimize-autoloader
 
 # Copier le reste du projet
 COPY . .
 
-# Exposer le port (Render utilise la variable PORT)
+# Configurer Apache pour pointer vers public/
+ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+
+# Render utilise la variable PORT, Apache doit écouter dessus
+RUN sed -i 's/Listen 80/Listen ${PORT}/' /etc/apache2/ports.conf
+RUN sed -i 's/:80/:${PORT}/' /etc/apache2/sites-available/000-default.conf
+
 EXPOSE 10000
 
-# Lancer le serveur PHP intégré sur le port de Render
-CMD php -S 0.0.0.0:${PORT:-10000} -t public
+CMD ["apache2-foreground"]
