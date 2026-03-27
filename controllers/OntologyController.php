@@ -31,7 +31,10 @@ class OntologyController
         }
 
         $dest = UPLOAD_PATH . '/' . basename($file['name']);
-        move_uploaded_file($file['tmp_name'], $dest);
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            header('Location: ?action=home&msg=upload_error');
+            return;
+        }
 
         header('Location: ?action=home&msg=success');
     }

@@ -21,6 +21,9 @@ COPY . .
 # Installer les dépendances PHP
 RUN composer install --no-dev --optimize-autoloader
 
+# Donner les permissions d'écriture au dossier data/
+RUN mkdir -p /var/www/html/data && chown -R www-data:www-data /var/www/html/data && chmod 755 /var/www/html/data
+
 # Configurer Apache pour pointer vers public/
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
